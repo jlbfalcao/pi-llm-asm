@@ -1,0 +1,6 @@
+pi-llm.asm
+Copyright (c) 2026 Jorge Falcão
+
+This project is an AArch64 port of the ideas in llm.asm
+(https://github.com/alesha-pro/llm.asm),
+Copyright (c) 2026 Alexey Fateev (alesha-pro), released under the MIT License.
