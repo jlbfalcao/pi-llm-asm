@@ -86,6 +86,12 @@ float32 NumPy reference (`tools/reference.py`) using the same weights file.
           rms_ffn[L,D] w1[L,H,D] w2[L,D,H] w3[L,H,D] rms_final[D]
 ```
 
+## License
+
+[MIT](LICENSE). Based on the ideas of [llm.asm](https://github.com/alesha-pro/llm.asm)
+by Alexey Fateev, also MIT-licensed. The Raspberry Pi firmware bundled in the
+SD card zip is distributed under its own licence (`LICENCE.broadcom`).
+
 ## Possible next steps
 
 - Use all 4 cores (spin-table + barrier), like the SMP in the original project.
