@@ -1,0 +1,92 @@
+# pi-llm.asm — an LLM running directly on the Raspberry Pi chip, with no operating system
+
+An **AArch64 (ARMv8)** port of the idea behind [`llm.asm/02-baremetal-os`](https://github.com/alesha-pro/llm.asm/tree/main/02-baremetal-os):
+the Pi firmware loads `kernel8.img` and from then on it is only our assembly code —
+no Linux, no C, no libc, no libm.
+
+The original project is pure x86-64 (NASM, AVX2, Multiboot, VGA, PS/2, ACPI) and **does not run on a Pi**.
+Here everything was rewritten for ARM: boot, MMU, UART, NEON math and the transformer.
+
+## What's inside
+
+| Part | File | What it does |
+|---|---|---|
+| Boot | `src/boot.s` | only core 0 boots, drops from EL3/EL2 to EL1, enables NEON, zeroes `.bss`, identity-mapped MMU (2 MiB / 1 GiB blocks, cached RAM, peripherals as device memory) |
+| Console | `src/uart.s` | PL011 UART0 at 115200 8N1 on GPIO14/15; detects Pi 3 (Cortex-A53) or Pi 4 (Cortex-A72) via `MIDR_EL1` |
+| Math | `src/math.s` | NEON matvec (2 rows at a time, 8 accumulators), RMSNorm, softmax, SwiGLU, custom `expf` and `sincosf` (Cephes / Cody-Waite) |
+| Model | `src/llm.s` | transformer forward pass with KV cache, RoPE, GQA, sampling (greedy / temperature with xorshift), interactive console |
+| Weights | `src/model.s` | `.incbin` of the model: the weights live **inside kernel8.img** and are read without copying |
+
+**Bundled model:** a 2.37 M-parameter transformer from the same family as Qwen3/Llama
+(RMSNorm + RoPE + GQA 6→2 heads + SwiGLU, tied embeddings), 6 layers, dim 192,
+context 256, character-level, trained on TinyShakespeare. It generates Shakespeare-style
+text; it is not a chat assistant.
+
+## Supported hardware
+
+- **Raspberry Pi 3 B/B+/A+, Zero 2 W** (Cortex-A53) — tested in QEMU `raspi3b`
+- **Raspberry Pi 4** (Cortex-A72) — supported in code (peripherals at `0xFE000000`), not tested in emulation
+- Not supported: Pi 5 (the UART lives on the RP1 chip), Pi 1/Zero/Zero W (ARMv6, 32-bit)
+
+The kernel uses ~10 MiB of RAM in total.
+
+## Building
+
+```bash
+sudo apt install binutils-aarch64-linux-gnu qemu-system-arm   # qemu only for emulation
+make                      # -> build/kernel8.img (uses build/model.piml)
+make run                  # emulates a Pi 3B in QEMU, console in the terminal
+```
+
+Training another model (requires PyTorch):
+
+```bash
+python3 tools/train.py --steps 2500 --out build/model.piml
+python3 tools/reference.py build/model.piml "ROMEO:" 100   # NumPy reference to compare against
+```
+
+## Running on a real Raspberry Pi
+
+1. Format a micro-SD card as **FAT32**.
+2. Copy the contents of `pi-llm-sdcard.zip` to the root of the card (or run `make sdcard`):
+   `kernel8.img`, `config.txt` and the official firmware (`bootcode.bin`, `start.elf`, `fixup.dat`, `start4.elf`, `fixup4.dat`).
+3. Connect a **3.3 V USB-serial adapter** (never 5 V!):
+   - adapter GND → pin 6
+   - adapter RX → pin 8 (GPIO14, Pi TX)
+   - adapter TX → pin 10 (GPIO15, Pi RX)
+4. On the computer: `screen /dev/ttyUSB0 115200` (or PuTTY, 115200 8N1).
+5. Power on the Pi. The banner and the `pi-llm>` prompt appear.
+
+There is no HDMI output: the console is serial only.
+
+## Console commands
+
+| Command | Effect |
+|---|---|
+| text + Enter | the model continues the text |
+| `/t8` | temperature 0.8 (`/tN` = N/10) |
+| `/greedy` | deterministic (argmax) |
+| `/n300` | number of tokens to generate |
+| `/bench` | generates 200 tokens from `ROMEO:` and shows tok/s |
+| `/help` | help |
+
+## Verification
+
+In greedy mode, the kernel output in QEMU matches, character for character, the output of the
+float32 NumPy reference (`tools/reference.py`) using the same weights file.
+
+## PIML v1 format
+
+```
+0   'PIML'  u32 version  dim hidden layers heads kv_heads vocab seq   (u32)
+64  vocabulary character table (256 B)
+320 fp32: emb[V,D] rms_att[L,D] wq[L,D,D] wk[L,KV,D] wv[L,KV,D] wo[L,D,D]
+          rms_ffn[L,D] w1[L,H,D] w2[L,D,H] w3[L,H,D] rms_final[D]
+```
+
+## Possible next steps
+
+- Use all 4 cores (spin-table + barrier), like the SMP in the original project.
+- INT8 weights (Q8_0) with `sdot` (Pi 5) / `smlal` (Pi 3/4) to fit larger models.
+- HDMI output through the VideoCore mailbox framebuffer.
+- Port Qwen3-0.6B (needs ~1.1 GB: only on a Pi 4 with 2 GB or more, plus a BPE tokenizer).
